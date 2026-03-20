@@ -1,0 +1,44 @@
+chttp
+=====
+
+http client to impersonate chrome browser.
+
+Extract cookies and user-agent from browser and fake browser request using Chrome's remote debugging protocol.
+
+Chrome must be running with remote debugging enabled:
+
+    google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome
+
+Usage
+
+	req, _ := http.NewRequest("GET", "https://httpbin.org/cookies")
+	chttp.NewClient("ws://localhost:9222").Do(req)
+
+Running chrome remotely
+
+    Manually authenticate to websites using a remote X server (remmina, xpra, etc.).
+    Since Chrome only allow listening on localhost, you will also need something that can forward ports, like socat, or set up iptables rules.
+
+    Here's socat example on NixOS + tailscale.
+
+        # 100.97.173.112:9222 (tailscale IP) -> 127.0.0.1:9222
+        systemd.services."socat-9222" = {
+          enable = true;
+
+          serviceConfig = {
+            ExecStart = "${pkgs.socat}/bin/socat TCP-LISTEN:9222,bind=100.97.173.112,fork TCP:127.0.0.1:9222";
+          };
+          wantedBy = [ "network-online.target" ];
+        };
+
+    Iptables on NixOS.
+
+        networking.firewall.extraCommands = ''
+          iptables -t nat -A PREROUTING -p tcp ! -s 127.0.0.0/8 --dport 9222 -j DNAT --to-destination 127.0.0.1:9222
+          iptables -t nat -A OUTPUT -p tcp -d 127.0.0.2 --dport 9222 -j DNAT --to-destination 127.0.0.1:9222
+        '';
+
+    Now you can connect to remote Chrome instance using its remote address.
+
+	    chttp.NewClient("ws://100.97.173.112:9222").Do(req)
+  
