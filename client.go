@@ -2,6 +2,8 @@ package chttp
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -36,8 +38,8 @@ func WithCookieTimeout(d time.Duration) Option {
 }
 
 // NewClient returns an *http.Client that mimics a real browser.
-// It lazily connects to Chrome via CDP on the first request to fetch
-// cookies and user-agent, then caches them for the configured TTL.
+// It connects to Chrome via CDP to fetch cookies and user-agent,
+// then refreshes them in the background on the configured TTL.
 func NewClient(cdpAddr string, opts ...Option) *http.Client {
 	if cdpAddr == "" {
 		cdpAddr = os.Getenv("CHTTP_CDP_ADDR")
@@ -66,6 +68,11 @@ func NewClient(cdpAddr string, opts ...Option) *http.Client {
 		t.rl = ratelimit.New(o.rps)
 	}
 
+	if err := t.refresh(context.Background()); err != nil {
+		slog.Error(fmt.Sprintf("chttp: %v", err))
+	}
+	go t.refreshLoop()
+
 	return &http.Client{
 		Jar:       jar,
 		Transport: t,
@@ -81,7 +88,6 @@ type transport struct {
 
 	mu        sync.Mutex
 	userAgent string
-	lastFetch time.Time
 }
 
 func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -89,50 +95,31 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		t.rl.Take()
 	}
 
-	refreshed, err := t.ensureFresh(req.Context())
-	if err != nil {
-		return nil, err
-	}
-
-	req = req.Clone(req.Context())
-
 	if t.userAgent != "" {
 		req.Header.Set("User-Agent", t.userAgent)
-	}
-
-	// http.Client adds jar cookies before calling RoundTrip.
-	// If we just refreshed the jar, the client missed them — add manually.
-	if refreshed {
-		for _, c := range t.jar.Cookies(req.URL) {
-			req.AddCookie(c)
-		}
 	}
 
 	return t.base.RoundTrip(req)
 }
 
-func (t *transport) ensureFresh(ctx context.Context) (bool, error) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
-	if time.Since(t.lastFetch) < t.opts.cacheTTL {
-		return false, nil
-	}
-
+func (t *transport) refresh(ctx context.Context) error {
 	ua, cookies, err := t.fetchFromCDP(ctx)
 	if err != nil {
-		// Chrome is down but we have cached data — use stale cache
-		// and retry on the next request.
-		if !t.lastFetch.IsZero() {
-			return false, nil
-		}
-		return false, err
+		return err
 	}
 
+	t.mu.Lock()
 	t.userAgent = ua
+	t.mu.Unlock()
 	t.setCookies(cookies)
-	t.lastFetch = time.Now()
-	return true, nil
+	return nil
+}
+
+func (t *transport) refreshLoop() {
+	for {
+		time.Sleep(t.opts.cacheTTL)
+		t.refresh(context.Background())
+	}
 }
 
 func (t *transport) fetchFromCDP(ctx context.Context) (string, []*cookie, error) {

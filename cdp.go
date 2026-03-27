@@ -202,6 +202,23 @@ func resolveHost(ctx context.Context, host string) (string, error) {
 	return addrs[0].IP.String(), nil
 }
 
+func (client *cdpClient) navigate(ctx context.Context, targetURL string) error {
+	result, err := client.execute(ctx, "Target.createTarget", map[string]string{"url": targetURL})
+	if err != nil {
+		return err
+	}
+	var target struct {
+		TargetID string `json:"targetId"`
+	}
+	if err := json.Unmarshal(result, &target); err != nil {
+		return err
+	}
+	// wait for page to load (httpbin cookie endpoints redirect)
+	time.Sleep(3 * time.Second)
+	_, err = client.execute(ctx, "Target.closeTarget", map[string]string{"targetId": target.TargetID})
+	return err
+}
+
 func (client *cdpClient) fetchUserAgent(ctx context.Context) (string, error) {
 	result, err := client.execute(ctx, "Browser.getVersion", nil)
 	if err != nil {
