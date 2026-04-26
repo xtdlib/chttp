@@ -15,8 +15,9 @@ import (
 )
 
 type options struct {
-	cacheTTL time.Duration
-	rps      int
+	cacheTTL  time.Duration
+	rps       int
+	editReq   func(*http.Request) error
 }
 
 // Option configures a Client.
@@ -34,6 +35,17 @@ func WithRateLimit(rps int) Option {
 func WithCookieTimeout(d time.Duration) Option {
 	return func(o *options) {
 		o.cacheTTL = d
+	}
+}
+
+// WithRequestEditor registers a function that is called on every
+// outgoing request just before it is sent. Use it to attach headers
+// (e.g. Authorization) or otherwise mutate the request. If it returns
+// an error, the request is aborted and the error is returned to the
+// caller of Client.Do.
+func WithRequestEditor(fn func(*http.Request) error) Option {
+	return func(o *options) {
+		o.editReq = fn
 	}
 }
 
@@ -97,6 +109,12 @@ func (t *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	if t.userAgent != "" {
 		req.Header.Set("User-Agent", t.userAgent)
+	}
+
+	if t.opts.editReq != nil {
+		if err := t.opts.editReq(req); err != nil {
+			return nil, err
+		}
 	}
 
 	return t.base.RoundTrip(req)
